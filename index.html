@@ -2,7 +2,10 @@
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <title>OmniStudio</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OmniStudio Sovereign - Celestial Pro</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+    
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
     <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
@@ -14,97 +17,170 @@
 </head>
 <body>
 
+<div id="tooltip-3d" class="tooltip-3d"></div>
+
 <div id="helpModal" class="modal">
     <div class="modal-content">
         <span class="close-btn" onclick="toggleHelp()">&times;</span>
-        <h2 style="margin-top:0;">📖 Guide d'utilisation</h2>
-        <div class="help-step"><strong>1. Charger :</strong> Boutons <em>Exemples</em> ou import.</div>
-        <div class="help-step"><strong>2. Mapper :</strong> Choisissez Axe X (Valeur) et Axe Y (Nom).</div>
-        <div class="help-step"><strong>3. Visualiser :</strong> Choisissez un type de visualisation.</div>
-        <div class="help-step"><strong>4. Exporter :</strong> Sauvegardez vos travaux en PNG, SVG ou en CSV filtré.</div>
-        <button class="btn-main" onclick="toggleHelp()" style="margin-top:10px;">Compris !</button>
+        <h2 style="margin-top:0; color: var(--primary);">Guide OmniStudio</h2>
+        
+        <div class="help-list">
+            <div>📥 <strong>Import :</strong> Choisissez un <em>Sample</em> ou importez votre fichier (CSV/JSON) dans le volet 1.</div>
+            <div>⚙️ <strong>Config :</strong> Filtrez vos données (volet 2) et définissez vos axes X/Y (volet 3).</div>
+            <div>📊 <strong>Vue :</strong> Changez de mode (Barres, Nuage, 3D, Galerie...) via les icônes du volet 5.</div>
+            <div>🌓 <strong>Style :</strong> Ajustez les couleurs ou passez en <em>Mode Sombre</em> via le Header.</div>
+            <div>💾 <strong>Export :</strong> Téléchargez votre résultat en PNG ou SVG via le volet 6.</div>
+        </div>
+
+        <p style="font-size: 11px; color: #95a5a6; border-top: 1px solid #eee; padding-top: 10px;">
+            * En mode <strong>3D</strong>, naviguez entre les données avec les flèches ou le clavier.
+        </p>
+
+        <button class="btn-main" onclick="toggleHelp()" style="margin-top:15px; font-weight:800;">FERMER</button>
     </div>
 </div>
 
 <div class="header">
-    <div style="display:flex; align-items:center; gap:15px;">
-        <strong>OMNISTUDIO</strong>
-        <button onclick="toggleHelp()" style="width:auto; padding:5px 12px; background:#f39c12; color:white;">❓ Aide</button>
-    </div>
-    <div style="display:flex; gap:8px;">
-        <button onclick="document.body.classList.toggle('dark')" style="width:auto; padding:5px 12px; border:1px solid white; background:transparent; color:white;">🌗 Mode</button>
-        <button onclick="location.reload()" style="background:#e74c3c; color:white; width:auto; padding:5px 12px;">Reset</button>
+    <div class="header-logo"><strong>OMNISTUDIO</strong></div>
+    <div class="header-actions">
+        <button onclick="toggleHelp()" class="btn-head-action">❓ Aide</button>
+        <button onclick="document.body.classList.toggle('dark')" class="btn-head-action">🌗 Mode</button>
+        <button onclick="location.reload()" class="btn-head-action btn-reset">Reset</button>
     </div>
 </div>
 
 <div class="stats-bar">
-    <div>Lignes: <span id="st-count" style="color:var(--primary)">0</span></div>
-    <div>Max: <span id="st-max" style="color:var(--accent)">0</span></div>
-    <div id="msg" style="margin-left:auto; color:#27ae60; font-weight:bold;"></div>
+    <div>📊 Éléments: <span id="st-count" class="stat-highlight">0</span></div>
+    <div>📈 Max: <span id="st-max" class="stat-highlight">0</span></div>
+    <div id="msg" style="margin-left:auto; font-weight:bold; color:#27ae60;"></div>
 </div>
 
 <div class="main">
     <div class="sidebar">
-        <div class="section-title">Samples</div>
-        <div class="example-grid">
-            <button class="btn-example" onclick="loadLocalCSV('ChocolateSales.csv')">📁 Chocolate Sales</button>
-            <button class="btn-example" onclick="loadLocalCSV('netflix_titles.csv')">📁 Netflix titles</button>
-            <button class="btn-example" onclick="loadLocalCSV('StudentsPerformance.csv')">📁 Students performance</button>
-            <button class="btn-example" onclick="loadLocalCSV('vgsales.csv')">📁 Videogames sales</button>
-        </div>
-
-        <div class="section-title">Data</div>
-        <select id="src-type" onchange="toggleIn(this.value)">
-            <option value="csv">Fichier Local</option>
-            <option value="sparql">Requête SPARQL</option>
-        </select>
-        <div id="zone-f"><input type="file" id="f-upload" accept=".csv,.tsv,.txt,.json"></div>
-        <div id="zone-s" style="display:none;"><textarea id="q-sparql" placeholder="SELECT..."></textarea><button class="btn-main" onclick="runSparql()">Run</button></div>
-
-        <div class="section-title">Recherche</div>
-        <input type="text" id="f-search" placeholder="🔍 Rechercher..." oninput="refresh()">
-        <input type="range" id="l-num" min="5" max="200" value="20" oninput="refresh()">
-
-        <div class="section-title">Configuration</div>
-        <select id="sort-type" onchange="refresh()">
-            <option value="desc">Valeur (Décroissant)</option>
-            <option value="asc">Valeur (Croissant)</option>
-            <option value="name-asc">Nom (A-Z)</option>
-        </select>
-        <select id="ax-x" onchange="refresh()"></select>
-        <select id="ax-y" onchange="refresh()"></select>
         
-        <div class="section-title">Style visuel</div>
-        <div style="display:flex; gap:10px; align-items:center;">
-            <input type="color" id="c-pick" value="#3498db" oninput="refresh()">
-            <select id="c-scheme" onchange="refresh()">
-                <option value="single">Unique</option>
-                <option value="viridis">Viridis</option>
-                <option value="magma">Magma</option>
-                <option value="tableau10">Tableau</option>
-            </select>
-        </div>
-
-        <div class="section-title">Visualisations</div>
-        <div class="chart-grid">
-            <button class="c-btn active" data-type="bar">📊 Bar</button>
-            <button class="c-btn" data-type="pie">🍕 Pie</button>
-            <button class="c-btn" data-type="scatter">🎯 Points</button>
-            <button class="c-btn" data-type="cloud">☁️ Cloud</button>
-            <button class="c-btn" data-type="line">📈 Line</button>
-            <button class="c-btn" data-type="3d">🧊 3D</button>
-            <button class="c-btn" data-type="table">📋 Table</button>
-            <button class="c-btn" data-type="gallery">🖼️ Galerie</button>
-        </div>
-
-        <div class="section-title">Exports</div>
-        <div style="display:flex; flex-direction:column; gap:5px;">
-            <div style="display:flex; gap:5px;">
-                <button class="btn-main" onclick="exportPNG()">PNG</button>
-                <button class="btn-main" style="background:#8e44ad" onclick="exportSVG()">SVG</button>
+        <details open>
+            <summary class="section-title">0. Jeux de données d'exemples</summary>
+            <div class="details-content">
+                <div class="details-wrapper">
+                    <div class="example-grid">
+                        <button class="btn-example" onclick="loadLocalCSV('FRvideos.csv')">📁 YouTube FR</button>
+                        <button class="btn-example" onclick="loadLocalCSV('netflix_titles.csv')">📁 Netflix</button>
+                        <button class="btn-example" onclick="loadLocalCSV('StudentsPerformance.csv')">📁 Étudiants</button>
+                        <button class="btn-example" onclick="loadLocalCSV('vgsales.csv')">📁 Jeux Vidéo</button>
+                    </div>
+                </div>
             </div>
-            <button class="btn-main" style="background:#27ae60" onclick="exportCSVFiltered()">Export CSV Filtré</button>
-        </div>
+        </details>
+
+        <details>
+            <summary class="section-title">1. Source de données</summary>
+            <div class="details-content">
+                <div class="details-wrapper">
+                    <label class="input-label">Provenance :</label>
+                    <select id="src-type" onchange="toggleIn(this.value)">
+                        <option value="csv">Fichier Local</option>
+                        <option value="sparql">Requête SPARQL</option>
+                    </select>
+                    <div id="zone-f">
+                        <input type="file" id="f-upload" accept=".csv,.tsv,.txt,.json">
+                    </div>
+                    <div id="zone-s" style="display:none;">
+                        <textarea id="q-sparql" placeholder="SELECT..."></textarea>
+                        <button class="btn-main" onclick="runSparql()">Run</button>
+                    </div>
+                </div>
+            </div>
+        </details>
+
+        <details>
+            <summary class="section-title">2. Recherche & Filtrage</summary>
+            <div class="details-content">
+                <div class="details-wrapper">
+                    <label class="input-label">Chercher un mot :</label>
+                    <input type="text" id="f-search" placeholder="🔍 Rechercher..." oninput="refresh()">
+                    <label class="input-label">Quantité à afficher :</label>
+                    <input type="range" id="l-num" min="5" max="200" value="20" oninput="refresh()">
+                </div>
+            </div>
+        </details>
+
+        <details open>
+            <summary class="section-title">3. Configuration des Axes</summary>
+            <div class="details-content">
+                <div class="details-wrapper">
+                    <label class="input-label">Trier par :</label>
+                    <select id="sort-type" onchange="refresh()">
+                        <option value="desc">Valeur (Décroissant)</option>
+                        <option value="asc">Valeur (Croissant)</option>
+                        <option value="name-asc">Nom (A-Z)</option>
+                    </select>
+                    <div class="axes-config">
+                        <div style="flex:1">
+                            <label class="input-label">Axe X (Valeur) :</label>
+                            <select id="ax-x" onchange="refresh()"></select>
+                        </div>
+                        <div style="flex:1">
+                            <label class="input-label">Axe Y (Nom) :</label>
+                            <select id="ax-y" onchange="refresh()"></select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </details>
+        
+        <details>
+            <summary class="section-title">4. Style visuel</summary>
+            <div class="details-content">
+                <div class="details-wrapper">
+                    <div class="style-row">
+                        <div style="flex:0 0 50px">
+                            <label class="input-label">Couleur :</label>
+                            <input type="color" id="c-pick" value="#3498db" oninput="refresh()">
+                        </div>
+                        <div style="flex:1">
+                            <label class="input-label">Palette :</label>
+                            <select id="c-scheme" onchange="refresh()">
+                                <option value="single">Unique</option>
+                                <option value="viridis">Viridis</option>
+                                <option value="magma">Magma</option>
+                                <option value="tableau10">Tableau</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </details>
+
+        <details open>
+            <summary class="section-title">5. Visualisations</summary>
+            <div class="details-content">
+                <div class="details-wrapper">
+                    <div class="chart-grid">
+                        <button class="c-btn active" data-type="bar">📊 <small>Bar</small></button>
+                        <button class="c-btn" data-type="pie">🍕 <small>Pie</small></button>
+                        <button class="c-btn" data-type="scatter">🎯 <small>Points</small></button>
+                        <button class="c-btn" data-type="cloud">☁️ <small>Cloud</small></button>
+                        <button class="c-btn" data-type="line">📈 <small>Lines</small></button>
+                        <button class="c-btn" data-type="3d">🧊 <small>3D</small></button>
+                        <button class="c-btn" data-type="table">📋 <small>Table</small></button>
+                        <button class="c-btn" data-type="gallery">🖼️ <small>Gallery</small></button>
+                    </div>
+                </div>
+            </div>
+        </details>
+
+        <details>
+            <summary class="section-title">6. Exports</summary>
+            <div class="details-content">
+                <div class="details-wrapper">
+                    <div class="export-grid">
+                        <button class="btn-export" style="background:#2f6fc8" onclick="exportPNG()">PNG</button>
+                        <button class="btn-export" style="background:#8e44ad" onclick="exportSVG()">SVG</button>
+                        <button class="btn-export" style="background:#27ae60" onclick="exportCSVFiltered()">CSV</button>
+                    </div>
+                </div>
+            </div>
+        </details>
     </div>
 
     <div class="content">
@@ -118,5 +194,4 @@
 
 <script src="index.js"></script>
 </body>
-
 </html>
