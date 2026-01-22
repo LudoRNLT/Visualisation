@@ -2,38 +2,222 @@ let dataStore = [];
 let currentType = 'bar';
 let vView = null;
 let scene, camera, renderer, controls;
+let planets = []; 
+let targetIndex = 0;
 let lastFilteredData = [];
+let targetCameraX = 0;
+let mouse = new THREE.Vector2(-1, -1);
+let raycaster = new THREE.Raycaster();
 
-// --- UI & MODAL ---
-function toggleHelp() {
-    const modal = document.getElementById('helpModal');
-    modal.style.display = (modal.style.display === 'block') ? 'none' : 'block';
+// --- ACCORDÉONS ANIMÉS (Stables) ---
+class DetailsAnimator {
+    constructor(el) {
+        this.el = el;
+        this.summary = el.querySelector('summary');
+        this.isClosing = false;
+        this.summary.addEventListener('click', (e) => this.onClick(e));
+    }
+    onClick(e) {
+        e.preventDefault(); 
+        if (this.isClosing || !this.el.open) { this.el.open = true; } 
+        else {
+            this.isClosing = true; this.el.classList.add('collapsing');
+            setTimeout(() => { this.el.open = false; this.el.classList.remove('collapsing'); this.isClosing = false; }, 350);
+        }
+    }
 }
+document.querySelectorAll('details').forEach(el => new DetailsAnimator(el));
 
-function toggleIn(v) {
-    document.getElementById('zone-f').style.display = v === 'sparql' ? 'none' : 'block';
-    document.getElementById('zone-s').style.display = v === 'sparql' ? 'block' : 'none';
-}
+// --- NAVIGATION VOYAGER 3D (Intact) ---
+function nextItem() { if(targetIndex < planets.length - 1) { targetIndex++; targetCameraX = planets[targetIndex].x; } }
+function prevItem() { if(targetIndex > 0) { targetIndex--; targetCameraX = planets[targetIndex].x; } }
 
-// --- CHARGEMENT ---
-function loadLocalCSV(filename) {
-    const path = `exemples_csv/${filename}`;
-    Papa.parse(path, {
-        download: true, header: true, dynamicTyping: true, skipEmptyLines: true,
-        complete: r => init(r.data, filename),
-        error: e => alert(`Fichier introuvable dans exemples_csv/`)
-    });
-}
+// --- ENGINE REFRESH & LOAD ---
 
+// RÉPARATION : Ajout de l'écouteur pour le bouton d'upload CSV
 document.getElementById('f-upload').addEventListener('change', e => {
     const file = e.target.files[0];
     if(!file) return;
-    const reader = new FileReader();
-    reader.onload = evt => {
-        Papa.parse(evt.target.result, {header:true, dynamicTyping:true, skipEmptyLines:true, complete: r => init(r.data, file.name)});
-    };
-    reader.readAsText(file);
+    Papa.parse(file, {
+        header: true, 
+        dynamicTyping: true, 
+        skipEmptyLines: true, 
+        complete: r => init(r.data, file.name)
+    });
 });
+
+function loadLocalCSV(f) { Papa.parse(`exemples_csv/${f}`, { download: true, header: true, dynamicTyping: true, complete: r => init(r.data, f) }); }
+
+function init(data, name = null) {
+    dataStore = data.map(d => {
+        let r = {...d}; for(let k in r) if(!isNaN(r[k]) && r[k] !== "" && r[k] !== null) r[k] = Number(r[k]); return r;
+    });
+    const h = Object.keys(dataStore[0]);
+    const sx = document.getElementById('ax-x'), sy = document.getElementById('ax-y');
+    sx.innerHTML = ""; sy.innerHTML = "";
+    h.forEach(k => { sx.add(new Option(k,k)); sy.add(new Option(k,k)); });
+    const presets = { 'FRvideos.csv': {x:'views', y:'title'}, 'vgsales.csv': {x:'Global_Sales', y:'Name'} };
+    const mapping = presets[name] || {x:h.find(k => typeof dataStore[0][k] === 'number') || h[1], y:h[0]};
+    sx.value = mapping.x; sy.value = mapping.y;
+    refresh();
+}
+
+function refresh() {
+    if(!dataStore.length) return;
+    const xF = document.getElementById('ax-x').value, yF = document.getElementById('ax-y').value;
+    const limit = parseInt(document.getElementById('l-num').value);
+    const sortMode = document.getElementById('sort-type').value;
+
+    let filtered = dataStore.filter(d => JSON.stringify(d).toLowerCase().includes(document.getElementById('f-search').value.toLowerCase()));
+    
+    // Tri effectif des données
+    filtered.sort((a, b) => {
+        if(sortMode === 'desc') return (b[xF]||0) - (a[xF]||0);
+        if(sortMode === 'asc') return (a[xF]||0) - (b[xF]||0);
+        return String(a[yF]).localeCompare(String(b[yF]));
+    });
+    
+    lastFilteredData = filtered.slice(0, limit);
+    document.getElementById('st-count').innerText = lastFilteredData.length;
+    document.getElementById('st-max').innerText = lastFilteredData.length ? Math.max(...lastFilteredData.map(d => d[xF]||0)).toLocaleString() : 0;
+
+    const vBox = document.getElementById('vis-box'), vDiv = document.getElementById('vis'), tDiv = document.getElementById('three-canvas'), extra = document.getElementById('extra-output');
+    vBox.style.display = "block"; vDiv.style.display = "block"; tDiv.style.display = "none"; extra.innerHTML = "";
+    const oldNav = document.querySelector('.voyager-nav'); if(oldNav) oldNav.remove();
+
+    if(currentType === '3d') {
+        vDiv.style.display = "none"; tDiv.style.display = "block";
+        targetIndex = 0; targetCameraX = 0;
+        inject3DNav(); render3DVoyager(lastFilteredData, xF, yF);
+    } else if(currentType === 'table') {
+        vBox.style.display = "none";
+        // RÉPARATION : Structure de tableau HTML standard pour le CSS
+        let html = `<table><thead><tr>${Object.keys(lastFilteredData[0]).map(k=>`<th>${k}</th>`).join('')}</tr></thead>`;
+        html += `<tbody>${lastFilteredData.map(r=>`<tr>${Object.values(r).map(v=>`<td>${v}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+        extra.innerHTML = html;
+    } else if(currentType === 'gallery') {
+        vBox.style.display = "none";
+        const imgK = Object.keys(lastFilteredData[0]).find(k => k.toLowerCase().includes('image') || k.toLowerCase().includes('pic') || k.toLowerCase().includes('thumb'));
+        extra.innerHTML = `<div class="gallery-grid">${lastFilteredData.map(d=>`<div class="gallery-card"><img src="${d[imgK]||'https://via.placeholder.com/150'}"><h4>${d[yF]}</h4><p>${d[xF]}</p></div>`).join('')}</div>`;
+    } else {
+        renderVega(lastFilteredData, xF, yF);
+    }
+}
+
+// --- RENDU VEGA (RÉPARÉ : Tri & Cloud) ---
+function renderVega(data, x, y) {
+    let spec = {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "data": { "values": data }, "width": "container", "height": "container",
+        "config": { "autosize": {"type": "fit", "contains": "padding"}, "view": {"stroke": "transparent"} }
+    };
+
+    if(currentType === 'cloud') {
+        // RÉPARATION : Randomisation et opacité pour le nuage de mots
+        spec.transform = [
+            {"calculate": "random()", "as": "randomX"},
+            {"calculate": "random()", "as": "randomY"}
+        ];
+        spec.mark = {"type": "text", "baseline": "middle"};
+        spec.encoding = {
+            "text": {"field": y},
+            "x": {"field": "randomX", "type": "quantitative", "axis": null},
+            "y": {"field": "randomY", "type": "quantitative", "axis": null},
+            "size": {"field": x, "type": "quantitative", "scale": {"range": [15, 70]}},
+            "color": {"field": x, "type": "quantitative", "scale": {"scheme": "viridis"}},
+            "opacity": {"field": x, "type": "quantitative", "scale": {"range": [0.4, 1]}}
+        };
+    } else {
+        // RÉPARATION : Ajout de "sort": null pour Points, Lines et Barres
+        spec.mark = { "type": currentType === 'pie' ? 'arc' : (currentType === 'scatter' ? 'point' : (currentType === 'line' ? 'line' : 'bar')), "tooltip": true };
+        spec.encoding = {
+            [currentType === 'pie' ? 'theta' : 'x']: {"field": x, "type": "quantitative", "aggregate": "max"},
+            [currentType === 'pie' ? 'color' : 'y']: {"field": y, "type": "nominal", "sort": null} // RÉPARÉ : sort null respecte le tri JS
+        };
+        if(currentType === 'scatter') {
+            spec.mark.filled = true;
+            spec.encoding.size = {"field": x, "type": "quantitative"};
+        }
+        if(currentType === 'bar' || currentType === 'line') spec.encoding.color = {"value": document.getElementById('c-pick').value};
+    }
+    vegaEmbed('#vis', spec, {actions:false}).then(res => vView = res.view);
+}
+
+// --- MOTEUR VOYAGER 3D (Strictement ton moteur) ---
+function render3DVoyager(data, xField, yField) {
+    const container = document.getElementById('three-canvas'); container.innerHTML = "";
+    const tooltip = document.getElementById('tooltip-3d');
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(document.body.classList.contains('dark') ? 0x0a0a0a : 0xf5f6fa);
+    camera = new THREE.PerspectiveCamera(60, container.clientWidth/container.clientHeight, 0.1, 2000);
+    camera.position.set(0, 3, 25);
+    renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+    renderer.setSize(container.clientWidth, container.clientHeight);
+    container.appendChild(renderer.domElement);
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true; planets = [];
+
+    const startColor = new THREE.Color("rgb(52, 152, 219)");
+    const startHSL = {}; startColor.getHSL(startHSL);
+    const maxV = Math.max(...data.map(d => Number(d[xField]) || 0)) || 1;
+
+    data.forEach((d, i) => {
+        const radius = ((Number(d[xField]) || 0) / maxV) * 8 + 2;
+        const planetColor = new THREE.Color();
+        planetColor.setHSL((startHSL.h + (i / data.length)) % 1, 0.7, 0.5); 
+        const mesh = new THREE.Mesh(new THREE.SphereGeometry(radius, 64, 64), new THREE.MeshPhongMaterial({ color: planetColor, shininess: 80, emissive: planetColor.clone().multiplyScalar(0.2) }));
+        mesh.position.set(i * 45, 0, 0);
+        mesh.userData = { name: d[yField], value: (Number(d[xField]) || 0).toLocaleString(), index: `${i+1}/${data.length}`, baseColor: planetColor.getHex() };
+        scene.add(mesh);
+        planets.push({ mesh, x: i * 45, offset: Math.random() * 100 });
+    });
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const light = new THREE.DirectionalLight(0xffffff, 1); light.position.set(10, 10, 20); scene.add(light);
+
+    container.onmousemove = (e) => {
+        const rect = container.getBoundingClientRect();
+        mouse.x = ((e.clientX - rect.left) / container.clientWidth) * 2 - 1;
+        mouse.y = -((e.clientY - rect.top) / container.clientHeight) * 2 + 1;
+    };
+
+    function checkIntersections() {
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObjects(planets.map(p => p.mesh));
+        if (intersects.length > 0) {
+            const p = intersects[0].object;
+            tooltip.style.display = "block";
+            const cRect = container.getBoundingClientRect();
+            tooltip.style.left = ((mouse.x + 1) / 2 * container.clientWidth + cRect.left + 20) + 'px';
+            tooltip.style.top = ((-mouse.y + 1) / 2 * container.clientHeight + cRect.top + 20) + 'px';
+            tooltip.innerHTML = `<strong>${p.userData.name}</strong><br>Valeur : ${p.userData.value}<br><small>${p.userData.index}</small>`;
+            p.material.emissive.setHex(0x666666);
+        } else { tooltip.style.display = "none"; planets.forEach(pl => pl.mesh.material.emissive.setHex(pl.mesh.userData.baseColor * 0.2)); }
+    }
+
+    window.onkeydown = (e) => { if(e.key === "ArrowRight") nextItem(); if(e.key === "ArrowLeft") prevItem(); };
+    function animate() {
+        if(currentType !== '3d') return;
+        requestAnimationFrame(animate);
+        const time = Date.now() * 0.001;
+        controls.target.x += (targetCameraX - controls.target.x) * 0.08;
+        camera.position.x += (targetCameraX - camera.position.x) * 0.08;
+        planets.forEach(p => { p.mesh.rotation.y += 0.006; p.mesh.position.y = Math.sin(time + p.offset) * 1.2; });
+        checkIntersections(); controls.update(); renderer.render(scene, camera);
+    }
+    animate();
+}
+
+function inject3DNav() {
+    const vBox = document.getElementById('vis-box');
+    const nav = document.createElement('div'); nav.className = 'voyager-nav';
+    nav.innerHTML = `<button class="v-nav-btn" onclick="prevItem()">❮</button><button class="v-nav-btn" onclick="nextItem()">❯</button>`;
+    vBox.appendChild(nav);
+}
+
+function toggleHelp() { document.getElementById('helpModal').style.display = (document.getElementById('helpModal').style.display === 'block') ? 'none' : 'block'; }
+function toggleIn(v) { document.getElementById('zone-f').style.display = v === 'sparql' ? 'none' : 'block'; document.getElementById('zone-s').style.display = v === 'sparql' ? 'block' : 'none'; }
+document.querySelectorAll('.c-btn').forEach(b => b.onclick = () => { document.querySelectorAll('.c-btn').forEach(x => x.classList.remove('active')); b.classList.add('active'); currentType = b.dataset.type; refresh(); });
 
 async function runSparql() {
     const q = document.getElementById('q-sparql').value;
@@ -45,188 +229,6 @@ async function runSparql() {
     init(clean, "sparql_query");
 }
 
-function getBestMapping(headers, filename) {
-    const presets = {
-        'FRvideos.csv': { x: 'views', y: 'title' },
-        'netflix_titles.csv': { x: 'release_year', y: 'title' },
-        'StudentsPerformance.csv': { x: 'math score', y: 'parental level of education' },
-        'vgsales.csv': { x: 'Global_Sales', y: 'Name' }
-    };
-    if (presets[filename]) return presets[filename];
-    const xKeywords = ['sales', 'views', 'count', 'score', 'price', 'valeur', 'total', 'rating'];
-    const bestX = headers.find(h => xKeywords.some(k => h.toLowerCase().includes(k))) || 
-                  headers.find(h => typeof dataStore[0][h] === 'number') || headers[1];
-    const yKeywords = ['title', 'name', 'nom', 'label', 'category', 'genre', 'type'];
-    const bestY = headers.find(h => yKeywords.some(k => h.toLowerCase().includes(k))) || headers[0];
-    return { x: bestX, y: bestY };
-}
-
-function init(data, originName = null) {
-    if(!data || data.length === 0) return;
-    dataStore = data.map(d => {
-        let row = {...d};
-        for(let k in row) if(!isNaN(row[k]) && row[k] !== "" && row[k] !== null) row[k] = Number(row[k]);
-        return row;
-    });
-    const h = Object.keys(dataStore[0]);
-    const sx = document.getElementById('ax-x'), sy = document.getElementById('ax-y');
-    sx.innerHTML = ""; sy.innerHTML = "";
-    h.forEach(k => { sx.add(new Option(k, k)); sy.add(new Option(k, k)); });
-    const mapping = getBestMapping(h, originName);
-    sx.value = mapping.x;
-    sy.value = mapping.y;
-    refresh();
-}
-
-document.querySelectorAll('.c-btn').forEach(b => b.addEventListener('click', () => {
-    document.querySelectorAll('.c-btn').forEach(x => x.classList.remove('active'));
-    b.classList.add('active'); currentType = b.dataset.type; refresh();
-}));
-
-function truncate(str, n) {
-    let s = String(str);
-    return (s.length > n) ? s.substr(0, n-1) + '...' : s;
-}
-
-function refresh() {
-    if(!dataStore.length) return;
-    const xF = document.getElementById('ax-x').value, yF = document.getElementById('ax-y').value;
-    const search = document.getElementById('f-search').value.toLowerCase();
-    const limit = document.getElementById('l-num').value;
-    const sortMode = document.getElementById('sort-type').value;
-    const scheme = document.getElementById('c-scheme').value;
-    const color = document.getElementById('c-pick').value;
-
-    let filtered = dataStore.filter(d => JSON.stringify(d).toLowerCase().includes(search));
-    filtered.sort((a, b) => {
-        if(sortMode === 'desc') return (Number(b[xF])||0) - (Number(a[xF])||0);
-        if(sortMode === 'asc') return (Number(a[xF])||0) - (Number(b[xF])||0);
-        if(sortMode === 'name-asc') return String(a[yF]).localeCompare(String(b[yF]));
-        return 0;
-    });
-    
-    lastFilteredData = filtered.slice(0, limit).map(d => ({
-        ...d,
-        displayLabel: truncate(d[yF], 20) 
-    }));
-
-    document.getElementById('st-count').innerText = lastFilteredData.length;
-    document.getElementById('st-max').innerText = lastFilteredData.length ? Math.max(...lastFilteredData.map(d => Number(d[xF])||0)) : 0;
-
-    const visBox = document.getElementById('vis-box'), visDiv = document.getElementById('vis'), 
-          threeDiv = document.getElementById('three-canvas'), extra = document.getElementById('extra-output');
-    
-    extra.innerHTML = ""; visBox.style.display = "block"; visDiv.style.display = "block"; threeDiv.style.display = "none";
-
-    if(currentType === 'table') {
-        visBox.style.display = "none";
-        extra.innerHTML = `<table><thead><tr>${Object.keys(dataStore[0]).map(k=>`<th>${k}</th>`).join('')}</tr></thead><tbody>${lastFilteredData.map(r=>`<tr>${Object.values(r).map(v=>`<td>${v}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
-    } else if(currentType === 'gallery') {
-        visBox.style.display = "none";
-        const imgK = Object.keys(dataStore[0]).find(k => k.toLowerCase().includes('image') || k.toLowerCase().includes('pic'));
-        extra.innerHTML = `<div class="gallery">${lastFilteredData.filter(d=>d[imgK]).map(d=>`<div class="card"><img src="${d[imgK]}"><p style="font-size:9px;">${d['displayLabel']}</p></div>`).join('')}</div>`;
-    } else if(currentType === '3d') {
-        visDiv.style.display = "none"; threeDiv.style.display = "block";
-        render3D(lastFilteredData, xF, 'displayLabel', color);
-    } else {
-        renderVega(lastFilteredData, xF, 'displayLabel', color, scheme, sortMode);
-    }
-}
-
-function renderVega(data, xField, yField, color, scheme, sortMode) {
-    let sortAxis = (sortMode === 'desc') ? "-x" : (sortMode === 'asc' ? "x" : "y");
-    let spec = {
-        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-        "data": { "values": data }, "width": "container", "height": 450,
-        "params": [{ "name": "highlight", "select": {"type": "point", "on": "mouseover"} }],
-        "transform": [{"calculate": `datum['${xField}'] * 1`, "as": "valeur_num"}],
-        "config": { "view": {"stroke": "transparent"}, "transition": { "duration": 500 } }
-    };
-
-    if(currentType === 'bar') {
-        spec.mark = { "type": "bar", "tooltip": true, "cornerRadiusEnd": 5 };
-        if(scheme === 'single') spec.mark.color = color;
-        spec.encoding = { 
-            "x": {"field": "valeur_num", "type": "quantitative"}, 
-            "y": {"field": yField, "type": "nominal", "sort": sortAxis},
-            "color": scheme !== 'single' ? {"field": "valeur_num", "type": "quantitative", "scale": {"scheme": scheme}} : null 
-        };
-    } else if(currentType === 'pie') {
-        spec.mark = { "type": "arc", "tooltip": true, "outerRadius": 180 };
-        spec.encoding = { 
-            "theta": {"field": "valeur_num", "type": "quantitative"}, 
-            "color": {"field": yField, "type": "nominal", "scale": {"scheme": scheme==='single'?'tableau10':scheme}} 
-        };
-    } else if(currentType === 'cloud') {
-        spec.transform.push(
-            {"calculate": "0.15 + random() * 0.7", "as": "rx"},
-            {"calculate": "0.15 + random() * 0.7", "as": "ry"},
-            {"calculate": "random() > 0.7 ? 90 : 0", "as": "angle"}
-        );
-        spec.mark = { "type": "text", "baseline": "middle", "tooltip": true };
-        spec.encoding = { 
-            "x": {"field": "rx", "type": "quantitative", "axis": null, "scale": {"domain": [0, 1]}},
-            "y": {"field": "ry", "type": "quantitative", "axis": null, "scale": {"domain": [0, 1]}},
-            "angle": {"field": "angle", "type": "quantitative"},
-            "text": {"field": yField}, 
-            "size": {"field": "valeur_num", "type": "quantitative", "scale": {"range": [10, 32]}}, 
-            "color": {"field": "valeur_num", "scale": {"scheme": scheme==='single'?'viridis':scheme}},
-            // --- OPACITÉ LIÉE À LA VALEUR (Uniquement ici) ---
-            "opacity": {
-                "field": "valeur_num", 
-                "type": "quantitative", 
-                "scale": {"range": [0.2, 1.0]} // Les petits sont très transparents, les gros sont opaques
-            }
-        };
-    } else if(currentType === 'scatter') {
-        spec.mark = { "type": "point", "filled": true, "size": 150, "tooltip": true };
-        spec.encoding = { 
-            "x": {"field": "valeur_num", "type": "quantitative"}, 
-            "y": {"field": yField, "type": "nominal", "sort": sortAxis}, 
-            "color": {"field": "valeur_num", "scale": {"scheme": scheme==='single'?'viridis':scheme}} 
-        };
-    } else {
-        spec.mark = { "type": "line", "point": true, "tooltip": true, "color": color };
-        spec.encoding = { "x": {"field": yField, "type": "nominal", "sort": sortAxis}, "y": {"field": "valeur_num", "type": "quantitative"} };
-    }
-    vegaEmbed('#vis', spec, {actions:false, renderer: 'svg'}).then(r => vView = r.view);
-}
-
-function render3D(data, xField, yField, color) {
-    const container = document.getElementById('three-canvas'); container.innerHTML = "";
-    scene = new THREE.Scene(); scene.background = new THREE.Color(document.body.classList.contains('dark') ? 0x121212 : 0xf0f2f5);
-    camera = new THREE.PerspectiveCamera(75, container.clientWidth/container.clientHeight, 0.1, 1000); camera.position.set(0, 15, 25);
-    renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
-    renderer.setSize(container.clientWidth, container.clientHeight); container.appendChild(renderer.domElement);
-    controls = new THREE.OrbitControls(camera, renderer.domElement);
-    const light = new THREE.DirectionalLight(0xffffff, 1); light.position.set(10, 20, 10); scene.add(light);
-    scene.add(new THREE.AmbientLight(0x404040, 2));
-    const maxV = Math.max(...data.map(d => Number(d[xField]) || 0)) || 1;
-    data.forEach((d, i) => {
-        const h = ((Number(d[xField]) || 0) / maxV) * 15 + 0.1;
-        const bar = new THREE.Mesh(new THREE.BoxGeometry(0.8, h, 0.8), new THREE.MeshPhongMaterial({ color: color }));
-        bar.position.set(i * 1.5 - (data.length * 0.75), h/2, 0); scene.add(bar);
-    });
-    function animate() { if(currentType === '3d') { requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); } }
-    animate();
-}
-
-async function exportPNG() {
-    let url = currentType === '3d' ? renderer.domElement.toDataURL("image/png") : await vView.toImageURL('png');
-    const l = document.createElement('a'); l.href = url; l.download = 'viz.png'; l.click();
-}
-
-async function exportSVG() {
-    if(currentType === '3d') return;
-    const svg = await vView.toSVG();
-    const blob = new Blob([svg], {type: 'image/svg+xml'});
-    const url = URL.createObjectURL(blob);
-    const l = document.createElement('a'); l.href = url; l.download = 'viz.svg'; l.click();
-}
-
-function exportCSVFiltered() {
-    const csv = Papa.unparse(lastFilteredData);
-    const blob = new Blob([csv], {type: 'text/csv'});
-    const url = URL.createObjectURL(blob);
-    const l = document.createElement('a'); l.href = url; l.download = 'data_filtree.csv'; l.click();
-}
+async function exportPNG() { let url = currentType === '3d' ? renderer.domElement.toDataURL("image/png") : await vView.toImageURL('png'); const l = document.createElement('a'); l.href = url; l.download = 'viz.png'; l.click(); }
+async function exportSVG() { if(currentType === '3d') return; const svg = await vView.toSVG(); const blob = new Blob([svg], {type: 'image/svg+xml'}); const url = URL.createObjectURL(blob); const l = document.createElement('a'); l.href = url; l.download = 'viz.svg'; l.click(); }
+function exportCSVFiltered() { const csv = Papa.unparse(lastFilteredData); const blob = new Blob([csv], {type: 'text/csv'}); const url = URL.createObjectURL(blob); let l = document.createElement('a'); l.href = url; l.download = 'data.csv'; l.click(); }
